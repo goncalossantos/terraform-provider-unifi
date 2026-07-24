@@ -511,6 +511,137 @@ func TestWLANPrivatePresharedKeys_emptyIsNull(t *testing.T) {
 	}
 }
 
+func TestWLANPrivatePresharedKeys_preservesStateWhenControllerOmitsPasswords(t *testing.T) {
+	ctx := context.Background()
+	r := &wlanFrameworkResource{}
+	ppskType := types.ObjectType{AttrTypes: wlanPrivatePresharedKeyModel{}.AttributeTypes()}
+	prior, diags := types.ListValueFrom(ctx, ppskType, []wlanPrivatePresharedKeyModel{
+		{NetworkID: types.StringValue("net-a"), Password: types.StringValue("secretpass1")},
+		{NetworkID: types.StringValue("net-b"), Password: types.StringValue("secretpass2")},
+	})
+	if diags.HasError() {
+		t.Fatalf("building prior PPSK list: %v", diags)
+	}
+
+	tests := map[string][]unifi.WLANPrivatePresharedKeys{
+		"list omitted": nil,
+		"passwords omitted and entries reordered": {
+			{NetworkID: "net-b"},
+			{NetworkID: "net-a"},
+		},
+	}
+
+	for name, remote := range tests {
+		t.Run(name, func(t *testing.T) {
+			model := wlanFrameworkResourceModel{PrivatePresharedKeys: prior}
+			wlan := &unifi.WLAN{
+				PrivatePresharedKeysEnabled: true,
+				PrivatePresharedKeys:        remote,
+			}
+
+			if diags := r.wlanToModel(ctx, wlan, &model, "default"); diags.HasError() {
+				t.Fatalf("wlanToModel: %v", diags)
+			}
+			if !model.PrivatePresharedKeys.Equal(prior) {
+				t.Fatalf("PrivatePresharedKeys = %v, want preserved state %v", model.PrivatePresharedKeys, prior)
+			}
+		})
+	}
+}
+
+func TestWLANPrivatePresharedKeys_usesChangedControllerPassword(t *testing.T) {
+	ctx := context.Background()
+	r := &wlanFrameworkResource{}
+	ppskType := types.ObjectType{AttrTypes: wlanPrivatePresharedKeyModel{}.AttributeTypes()}
+	prior, diags := types.ListValueFrom(ctx, ppskType, []wlanPrivatePresharedKeyModel{
+		{NetworkID: types.StringValue("net-a"), Password: types.StringValue("secretpass1")},
+	})
+	if diags.HasError() {
+		t.Fatalf("building prior PPSK list: %v", diags)
+	}
+
+	model := wlanFrameworkResourceModel{PrivatePresharedKeys: prior}
+	wlan := &unifi.WLAN{
+		PrivatePresharedKeysEnabled: true,
+		PrivatePresharedKeys: []unifi.WLANPrivatePresharedKeys{
+			{NetworkID: "net-a", Password: "changedpass1"},
+		},
+	}
+	if diags := r.wlanToModel(ctx, wlan, &model, "default"); diags.HasError() {
+		t.Fatalf("wlanToModel: %v", diags)
+	}
+
+	var got []wlanPrivatePresharedKeyModel
+	if diags := model.PrivatePresharedKeys.ElementsAs(ctx, &got, false); diags.HasError() {
+		t.Fatalf("decoding PPSK state: %v", diags)
+	}
+	if len(got) != 1 || got[0].Password.ValueString() != "changedpass1" {
+		t.Fatalf("PrivatePresharedKeys = %v, want changed controller password", got)
+	}
+}
+
+func TestWLANPrivatePresharedKeys_explicitControllerDeletionClearsState(t *testing.T) {
+	ctx := context.Background()
+	r := &wlanFrameworkResource{}
+	ppskType := types.ObjectType{AttrTypes: wlanPrivatePresharedKeyModel{}.AttributeTypes()}
+	prior, diags := types.ListValueFrom(ctx, ppskType, []wlanPrivatePresharedKeyModel{
+		{NetworkID: types.StringValue("net-a"), Password: types.StringValue("secretpass1")},
+	})
+	if diags.HasError() {
+		t.Fatalf("building prior PPSK list: %v", diags)
+	}
+
+	model := wlanFrameworkResourceModel{PrivatePresharedKeys: prior}
+	wlan := &unifi.WLAN{
+		PrivatePresharedKeysEnabled: true,
+		PrivatePresharedKeys:        []unifi.WLANPrivatePresharedKeys{},
+	}
+	if diags := r.wlanToModel(ctx, wlan, &model, "default"); diags.HasError() {
+		t.Fatalf("wlanToModel: %v", diags)
+	}
+	if !model.PrivatePresharedKeys.IsNull() {
+		t.Fatalf("PrivatePresharedKeys = %v, want null after explicit deletion", model.PrivatePresharedKeys)
+	}
+}
+
+func TestWLANPrivatePresharedKeys_duplicateNetworksPreserveState(t *testing.T) {
+	ctx := context.Background()
+	r := &wlanFrameworkResource{}
+	ppskType := types.ObjectType{AttrTypes: wlanPrivatePresharedKeyModel{}.AttributeTypes()}
+	prior, diags := types.ListValueFrom(ctx, ppskType, []wlanPrivatePresharedKeyModel{
+		{NetworkID: types.StringValue("net-a"), Password: types.StringValue("secretpass1")},
+		{NetworkID: types.StringValue("net-a"), Password: types.StringValue("secretpass2")},
+	})
+	if diags.HasError() {
+		t.Fatalf("building prior PPSK list: %v", diags)
+	}
+
+	for name, remote := range map[string][]unifi.WLANPrivatePresharedKeys{
+		"omitted first": {
+			{NetworkID: "net-a"},
+			{NetworkID: "net-a", Password: "secretpass1"},
+		},
+		"visible first": {
+			{NetworkID: "net-a", Password: "secretpass1"},
+			{NetworkID: "net-a"},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			model := wlanFrameworkResourceModel{PrivatePresharedKeys: prior}
+			wlan := &unifi.WLAN{
+				PrivatePresharedKeysEnabled: true,
+				PrivatePresharedKeys:        remote,
+			}
+			if diags := r.wlanToModel(ctx, wlan, &model, "default"); diags.HasError() {
+				t.Fatalf("wlanToModel: %v", diags)
+			}
+			if !model.PrivatePresharedKeys.Equal(prior) {
+				t.Fatalf("PrivatePresharedKeys = %v, want preserved state %v", model.PrivatePresharedKeys, prior)
+			}
+		})
+	}
+}
+
 // TestApplyEnhancedIotOverrides guards #283: when enhanced_iot is enabled the
 // controller forces iapp_enabled, wpa3_support, wpa3_transition, pmf_mode and
 // dtim_ng, so the provider pins them in the plan to avoid an inconsistent-result

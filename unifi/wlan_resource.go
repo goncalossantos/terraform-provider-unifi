@@ -1522,8 +1522,57 @@ func (r *wlanFrameworkResource) planToWLAN(
 	return wlan, diags
 }
 
+func preservePrivatePresharedKeyState(
+	ctx context.Context,
+	remote []unifi.WLANPrivatePresharedKeys,
+	prior types.List,
+) (bool, diag.Diagnostics) {
+	var diags diag.Diagnostics
+	if prior.IsNull() || prior.IsUnknown() {
+		return false, diags
+	}
+
+	var priorKeys []wlanPrivatePresharedKeyModel
+	diags.Append(prior.ElementsAs(ctx, &priorKeys, false)...)
+	if diags.HasError() {
+		return false, diags
+	}
+	if remote == nil {
+		return len(priorKeys) > 0, diags
+	}
+	if len(remote) != len(priorKeys) {
+		return false, diags
+	}
+
+	matched := make([]bool, len(priorKeys))
+	for _, matchVisiblePassword := range []bool{true, false} {
+		for _, remoteKey := range remote {
+			if (remoteKey.Password != "") != matchVisiblePassword {
+				continue
+			}
+			found := false
+			for i, priorKey := range priorKeys {
+				if matched[i] || priorKey.NetworkID.ValueString() != remoteKey.NetworkID {
+					continue
+				}
+				if remoteKey.Password != "" && priorKey.Password.ValueString() != remoteKey.Password {
+					continue
+				}
+				matched[i] = true
+				found = true
+				break
+			}
+			if !found {
+				return false, diags
+			}
+		}
+	}
+
+	return true, diags
+}
+
 func (r *wlanFrameworkResource) wlanToModel(
-	_ context.Context,
+	ctx context.Context,
 	wlan *unifi.WLAN,
 	model *wlanFrameworkResourceModel,
 	site string,
@@ -1619,7 +1668,18 @@ func (r *wlanFrameworkResource) wlanToModel(
 	model.PrivatePresharedKeysEnabled = types.BoolValue(wlan.PrivatePresharedKeysEnabled)
 
 	ppskType := types.ObjectType{AttrTypes: wlanPrivatePresharedKeyModel{}.AttributeTypes()}
-	if len(wlan.PrivatePresharedKeys) > 0 {
+	preservePPSKs, d := preservePrivatePresharedKeyState(
+		ctx,
+		wlan.PrivatePresharedKeys,
+		model.PrivatePresharedKeys,
+	)
+	diags.Append(d...)
+	if !wlan.PrivatePresharedKeysEnabled {
+		model.PrivatePresharedKeys = types.ListNull(ppskType)
+	} else if preservePPSKs {
+		// The controller can omit PPSK passwords or the complete list. Keep the
+		// configured sensitive values when its visible network bindings still match.
+	} else if len(wlan.PrivatePresharedKeys) > 0 {
 		ppskValues := make([]attr.Value, len(wlan.PrivatePresharedKeys))
 		for i, ppsk := range wlan.PrivatePresharedKeys {
 			obj, d := types.ObjectValue(
