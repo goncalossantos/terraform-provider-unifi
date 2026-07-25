@@ -1092,6 +1092,10 @@ func (r *wlanFrameworkResource) Update(
 		return
 	}
 
+	// The controller can normalize configured values in its update response.
+	// Keep known plan values so the provider returns a state consistent with the apply.
+	r.applyPlanToState(ctx, &plan, &state)
+
 	// When the write-only passphrase is used, never persist the secret to state.
 	if !passphraseWO.IsNull() {
 		state.Passphrase = types.StringNull()

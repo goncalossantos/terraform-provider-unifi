@@ -338,7 +338,25 @@ func Test_wlanFrameworkResource_readPassphraseWO(t *testing.T) {
 }
 
 func Test_wlanFrameworkResource_applyPlanToState(t *testing.T) {
-	t.Skip("requires terraform state")
+	ctx := context.Background()
+	r := &wlanFrameworkResource{}
+	plan := wlanFrameworkResourceModel{
+		NetworkID:  types.StringValue("planned-network"),
+		Passphrase: types.StringValue("planned-passphrase"),
+	}
+	state := wlanFrameworkResourceModel{
+		NetworkID:  types.StringValue("controller-network"),
+		Passphrase: types.StringValue("controller-passphrase"),
+	}
+
+	r.applyPlanToState(ctx, &plan, &state)
+
+	if got := state.NetworkID.ValueString(); got != "planned-network" {
+		t.Errorf("NetworkID = %q, want %q", got, "planned-network")
+	}
+	if got := state.Passphrase.ValueString(); got != "planned-passphrase" {
+		t.Errorf("Passphrase = %q, want %q", got, "planned-passphrase")
+	}
 }
 
 func Test_wlanFrameworkResource_Delete(t *testing.T) {
